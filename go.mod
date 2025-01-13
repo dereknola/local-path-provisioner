@@ -1,6 +1,6 @@
 module github.com/rancher/local-path-provisioner
 
-go 1.23.0
+go 1.23.4
 
 require (
 	github.com/Sirupsen/logrus v0.11.0
@@ -12,7 +12,7 @@ require (
 	k8s.io/apimachinery v0.30.0
 	k8s.io/client-go v0.30.0
 	k8s.io/klog/v2 v2.120.1
-	sigs.k8s.io/sig-storage-lib-external-provisioner/v10 v10.0.1
+	sigs.k8s.io/sig-storage-lib-external-provisioner/v11 v11.0.1
 	sigs.k8s.io/yaml v1.3.0
 )
 

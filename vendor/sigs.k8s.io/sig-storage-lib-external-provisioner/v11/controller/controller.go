@@ -55,8 +55,8 @@ import (
 	ref "k8s.io/client-go/tools/reference"
 	"k8s.io/client-go/util/workqueue"
 	klog "k8s.io/klog/v2"
-	"sigs.k8s.io/sig-storage-lib-external-provisioner/v10/controller/metrics"
-	"sigs.k8s.io/sig-storage-lib-external-provisioner/v10/util"
+	"sigs.k8s.io/sig-storage-lib-external-provisioner/v11/controller/metrics"
+	"sigs.k8s.io/sig-storage-lib-external-provisioner/v11/util"
 )
 
 // This annotation is added to a PV that has been dynamically provisioned by
@@ -93,6 +93,8 @@ const controllerSubsystem = "controller"
 var (
 	errStopProvision = errors.New("stop provisioning")
 )
+
+type VolumeNameHook func(claim *v1.PersistentVolumeClaim) string
 
 // ProvisionController is a controller that provisions PersistentVolumes for
 // PersistentVolumeClaims.
@@ -179,6 +181,8 @@ type ProvisionController struct {
 	claimsInProgress sync.Map
 
 	volumeStore VolumeStore
+
+	volumeNameHook VolumeNameHook
 }
 
 const (
@@ -596,6 +600,16 @@ func DeletionTimeout(timeout time.Duration) func(*ProvisionController) error {
 	}
 }
 
+func VolumeName(hook VolumeNameHook) func(*ProvisionController) error {
+	return func(c *ProvisionController) error {
+		if c.HasRun() {
+			return errRuntime
+		}
+		c.volumeNameHook = hook
+		return nil
+	}
+}
+
 // HasRun returns whether the controller has Run
 func (ctrl *ProvisionController) HasRun() bool {
 	ctrl.hasRunLock.Lock()
@@ -606,12 +620,13 @@ func (ctrl *ProvisionController) HasRun() bool {
 // NewProvisionController creates a new provision controller using
 // the given configuration parameters and with private (non-shared) informers.
 func NewProvisionController(
-	logger klog.Logger,
+	ctx context.Context,
 	client kubernetes.Interface,
 	provisionerName string,
 	provisioner Provisioner,
 	options ...func(*ProvisionController) error,
 ) *ProvisionController {
+	logger := klog.FromContext(ctx)
 	id, err := os.Hostname()
 	if err != nil {
 		logger.Error(err, "Error getting hostname")
@@ -621,13 +636,11 @@ func NewProvisionController(
 	id = id + "_" + string(uuid.NewUUID())
 	component := provisionerName + "_" + id
 
-	// TODO: Once the following PR is merged, change to use StartLogging and StartRecordingToSinkWithContext
-	// https://github.com/kubernetes/kubernetes/pull/120729
 	v1.AddToScheme(scheme.Scheme)
-	broadcaster := record.NewBroadcaster()
+	broadcaster := record.NewBroadcaster(record.WithContext(ctx))
 	broadcaster.StartStructuredLogging(0)
 	broadcaster.StartRecordingToSink(&corev1.EventSinkImpl{Interface: client.CoreV1().Events(v1.NamespaceAll)})
-	eventRecorder := broadcaster.NewRecorder(scheme.Scheme, v1.EventSource{Component: component})
+	eventRecorder := broadcaster.NewRecorder(scheme.Scheme, v1.EventSource{Component: component}).WithLogger(logger)
 
 	controller := &ProvisionController{
 		client:                    client,
@@ -653,6 +666,7 @@ func NewProvisionController(
 		addFinalizer:              DefaultAddFinalizer,
 		hasRun:                    false,
 		hasRunLock:                &sync.Mutex{},
+		volumeNameHook:            getProvisionedVolumeNameForClaim,
 	}
 
 	for _, option := range options {
@@ -1404,7 +1418,7 @@ func (ctrl *ProvisionController) provisionClaimOperation(ctx context.Context, cl
 	//  A previous doProvisionClaim may just have finished while we were waiting for
 	//  the locks. Check that PV (with deterministic name) hasn't been provisioned
 	//  yet.
-	pvName := ctrl.getProvisionedVolumeNameForClaim(claim)
+	pvName := ctrl.volumeNameHook(claim)
 	_, exists, err := ctrl.volumes.GetByKey(pvName)
 	if err == nil && exists {
 		// Volume has been already provisioned, nothing to do.
@@ -1501,9 +1515,6 @@ func (ctrl *ProvisionController) provisionClaimOperation(ctx context.Context, cl
 
 	if err := ctrl.volumeStore.StoreVolume(logger, claim, volume); err != nil {
 		return ProvisioningFinished, err
-	}
-	if err = ctrl.volumes.Add(volume); err != nil {
-		utilruntime.HandleError(err)
 	}
 	return ProvisioningFinished, nil
 }
@@ -1654,7 +1665,7 @@ func getInClusterNamespace() string {
 
 // getProvisionedVolumeNameForClaim returns PV.Name for the provisioned volume.
 // The name must be unique.
-func (ctrl *ProvisionController) getProvisionedVolumeNameForClaim(claim *v1.PersistentVolumeClaim) string {
+func getProvisionedVolumeNameForClaim(claim *v1.PersistentVolumeClaim) string {
 	return "pvc-" + string(claim.UID)
 }
 

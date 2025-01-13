@@ -18,7 +18,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/klog/v2"
 
-	pvController "sigs.k8s.io/sig-storage-lib-external-provisioner/v10/controller"
+	pvController "sigs.k8s.io/sig-storage-lib-external-provisioner/v11/controller"
 )
 
 var (
@@ -262,7 +262,7 @@ func startDaemon(c *cli.Context) error {
 		return err
 	}
 	pc := pvController.NewProvisionController(
-		klog.FromContext(ctx),
+		ctx,
 		kubeClient,
 		provisionerName,
 		provisioner,
